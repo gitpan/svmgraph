@@ -1,0 +1,198 @@
+#!/usr/bin/perl -w
+
+use strict;
+use warnings;
+use Getopt::Std;
+use GraphViz;
+use Solaris::Disk::SVM;
+
+my $VERSION;
+$VERSION = "0.01";
+
+use vars qw( $opt_D $opt_h );
+
+=head1 NAME
+
+svmgraph - Graph Solaris Volume Manager objects using GraphViz
+
+=head1 SYNOPSIS
+
+    svmgraph [-D datadir] out.png
+
+=head2 Options
+
+  [-D <datadir>] : datadir is the directory where the data will be read from
+  [-h] :           show this help text
+
+=head2 Commands
+
+=head1 DESCRIPTION
+
+F<svmgraph> is a tool to graph your SDS/SVM configuration
+
+The C<-D> option provides the same interface as svm(1) (from
+Solaris::Disk::SVM), to read configuration from file instead from the needed
+commands outputs.
+
+The output file may be from one of the many output types in GraphViz.
+
+=cut
+
+sub say_usage {
+    my $version = Solaris::Disk::SVM->version;
+    print "svmgraph by Jérôme Fenal\n";
+    print "Version: $version\n";
+    print "\n\t$0  [-D datadir] out.png\n\n";
+    print << "EOT";
+Options:
+  [-D <datadir>] : datadir is the directory where the data will be read from
+  [-h]           : show this help text
+EOT
+
+    exit 0;
+}
+
+# Main
+
+getopts('D:h'); # Sets opt_* as a side effect.
+
+say_usage() if $opt_h;
+
+my $svm = Solaris::Disk::SVM->new( init => 0 );
+
+$svm->{vtoc}->readvtocdir($opt_D) if defined $opt_D;
+
+$svm->{mnttab}
+  ->readmtab( ( defined $opt_D ? ( mnttab => "$opt_D/mnttab.txt" ) : () ) );
+$svm->{mnttab}
+  ->readstab( ( defined $opt_D ? ( swaptab => "$opt_D/swaptab.txt" ) : () ) );
+
+$svm->readconfig( ( defined $opt_D ? ( metastatp => "$opt_D/metastat-p.txt" ) : () ) );
+
+my $imagename = shift @ARGV;
+my $imagetype = lc substr( $imagename, 1 + rindex( $imagename, "." ) );
+
+my %allowedformats = map { $_ => 1 } qw( canon text ps hpgl pcl mif pic gd gd2
+  gif jpeg png wbmp cmap ismap imap vrml vtx mp fig svg plain);
+
+die "Format $imagetype not doable by GraphViz"
+  if not defined $allowedformats{ $imagetype };
+
+my $g = GraphViz->new(
+    directed   => 0,
+    layout     => 'dot',
+    no_overlap => 1,
+    rankdir    => 1,
+    node       => {
+        fontname => 'helvetica-medium',
+        fontsize => 9,
+        shape    => 'ellipse',
+    }
+);
+
+foreach my $dev ( keys %{ $svm->{devices} } ) {
+    my $size  = $svm->size($dev) >> 11;
+    my $label = "$dev\n" . $svm->{devices}{$dev}{type} . "\n($size Mo)";
+    my ( @rank, @shape )  = (), ();
+
+    if ( defined( $svm->{mnttab}{dev2mp}{$dev} ) ) {
+        $label = $svm->{mnttab}{dev2mp}{$dev} . "\n$label";
+        @rank = ( rank => 'mountpoint' );
+    }
+    if ($svm->{devices}{$dev}{type} eq 'softpart') {
+        @rank = ( rank => 'softpart' );
+        @shape = ( shape => 'parallelogram' );
+    }
+    $g->add_node(
+        $dev,
+        label => $label,
+        @rank,
+        @shape,
+    );
+}
+
+foreach my $dev ( keys %{ $svm->{LeafPhysDevices} } ) {
+    my $label = "$dev\n";
+    if ( 0 + @{ $svm->{LeafPhysDevices}{$dev} } != 0 ) {
+        foreach my $pdev ( @{ $svm->{LeafPhysDevices}{$dev} } ) {
+            my $size = $svm->size($pdev) >> 11;
+            $g->add_node(
+                $pdev,
+                label => "$pdev\n$size Mo",
+                shape => 'box',
+                rank  => 'physical'
+            );
+        }
+    }
+}
+
+foreach my $parent ( keys %{ $svm->{SubElements} } ) {
+    foreach my $sub ( @{ $svm->{SubElements}{$parent} } ) {
+        $g->add_edge(
+            $parent   => $sub,
+            arrowhead => 'normal'
+        );
+
+    }
+}
+
+foreach my $parent ( keys %{ $svm->{LeafPhysDevices} } ) {
+    foreach my $sub ( @{ $svm->{LeafPhysDevices}{$parent} } ) {
+        $g->add_edge(
+            $parent   => $sub,
+            arrowhead => 'normal'
+        );
+
+    }
+}
+
+my $outputmethod = "as_$imagetype";
+$g->$outputmethod($imagename);
+
+__END__
+
+=head1 AUTHOR
+
+Jérôme Fenal <jfenal@free.fr>
+
+=head1 WEBSITE
+
+Head to L<http://jfenal.free.fr/Solaris/> to see some sample graphics.
+
+=head1 VERSION
+
+This is version 0.01 of the F<svmgraph> script.
+
+=head1 COPYRIGHT
+
+Copyright (C) 2004 Jérôme Fenal. All Rights Reserved
+
+This module is free software; you can redistribute it and/or modify it under the
+same terms as Perl itself.
+
+=head1 SEE ALSO
+
+=over
+
+=item *
+L<Solaris::Disk::SVM>
+
+is used to retrieve information about the SVM configuration.
+
+=item *
+L<Solaris::Disk::Partitions>
+
+is used to get raw disk partitions.
+
+=item *
+L<Solaris::Disk::MountTable>
+
+is used to get current mounted devices.
+
+=item *
+SDS / SVM manual pages
+
+metastat(1M), metatool(1M), etc.
+
+=back
+
